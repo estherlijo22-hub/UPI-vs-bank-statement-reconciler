@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>UPI Reconciler</title>
+<style>
+:root{--bg:#f7f7f4;--card:#fff;--tx:#1c1c1a;--mu:#6b6b66;--bd:#e3e3dc;--ac:#0f6e56;--hi:#b3261e;--md:#a15c00;--ok:#1b7a3d;color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141513;--card:#1e201d;--tx:#ecece8;--mu:#9a9a93;--bd:#333630;--ac:#4cc3a0;--hi:#ff8a80;--md:#f0b45a;--ok:#6fd195;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#141513;--card:#1e201d;--tx:#ecece8;--mu:#9a9a93;--bd:#333630;--ac:#4cc3a0;--hi:#ff8a80;--md:#f0b45a;--ok:#6fd195;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mu);margin:0 0 18px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:700px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px}
+.card h2{font-size:15px;margin:0 0 8px}
+textarea{width:100%;height:130px;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;resize:vertical}
+.maps{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;font-size:12px;color:var(--mu)}
+.maps select{font-size:12px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:2px}
+button,.btn{font:inherit;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--tx);border-radius:8px;padding:7px 12px}
+button.p{background:var(--ac);border-color:var(--ac);color:#fff;font-weight:600}
+@media(prefers-color-scheme:dark){button.p{color:#0b1a15}}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0}
+.bar input[type=number]{width:90px;background:var(--bg);color:var(--tx);border:1px solid var(--bd);border-radius:6px;padding:5px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}
+@media(max-width:700px){.stats{grid-template-columns:1fr 1fr}}
+.stat{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:10px 12px}
+.stat b{display:block;font-size:22px}.stat span{color:var(--mu);font-size:12px}
+.tabs{display:flex;gap:6px;margin-bottom:8px}.tabs button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.wrap{overflow-x:auto;border:1px solid var(--bd);border-radius:12px;background:var(--card)}
+table{border-collapse:collapse;width:100%;min-width:680px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--bd);vertical-align:top;font-size:13px}
+th{color:var(--mu);font-weight:600}td.n{text-align:right;white-space:nowrap}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid currentColor;white-space:nowrap}
+.high{color:var(--hi)}.md{color:var(--md)}.ok{color:var(--ok)}
+.note{color:var(--mu);font-size:12px;margin-top:10px}
+</style></head><body><main>
+<h1>UPI vs bank statement reconciler</h1>
+<p class="sub">Paste or upload both CSVs. Everything runs in your browser; nothing is uploaded anywhere.</p>
+<div class="grid">
+ <div class="card"><h2>1. Bank statement (CSV)</h2><textarea id="bank" placeholder="Date,Narration,Withdrawal Amt.,Deposit Amt.,Ref"></textarea>
+  <input type="file" accept=".csv,.txt" data-for="bank"><div class="maps" id="m-bank"></div></div>
+ <div class="card"><h2>2. UPI app history (CSV)</h2><textarea id="upi" placeholder="Date,Payee,Amount,UTR,Status"></textarea>
+  <input type="file" accept=".csv,.txt" data-for="upi"><div class="maps" id="m-upi"></div></div>
+</div>
+<div class="bar">
+ <button class="p" id="go">Analyse</button><button id="sample">Load sample data</button>
+ <label><input type="checkbox" id="onlyupi" checked> Only check UPI-looking bank debits</label>
+ <label>Flag large debits ≥ ₹ <input type="number" id="thr" value="5000"></label>
+</div>
+<div id="res"></div>
+<p class="note">Matching: first by 12-digit UPI reference (UTR) found in the bank narration, then by same amount within ±1 day. Failed or reversed UPI entries are ignored. A flag means “please verify”, not proof of fraud. If you spot a real unauthorised debit, report it to your bank and call 1930 or visit cybercrime.gov.in promptly.</p>
+</main>
+<script>
+const $=s=>document.querySelector(s),S={bank:null,upi:null};
+const F={date:/date/i,desc:/narration|description|particulars|details|remarks|payee|merchant/i,debit:/debit|withdrawal|\bdr\b/i,amt:/amount|amt/i,ref:/ref|utr|txn id|transaction id|rrn/i,status:/status/i};
+const LBL=[['date','Date'],['desc','Description'],['amt','Amount'],['ref','Ref/UTR'],['status','Status']];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const inr=v=>'₹'+v.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+function parseCSV(t){const r=[];let w=[],c='',q=false;for(let i=0;i<t.length;i++){const h=t[i];if(q){if(h=='"'){if(t[i+1]=='"'){c+='"';i++}else q=false}else c+=h}else if(h=='"')q=true;else if(h==','){w.push(c);c=''}else if(h=='\n'||h=='\r'){if(h=='\r'&&t[i+1]=='\n')i++;w.push(c);c='';if(w.some(x=>x.trim()))r.push(w);w=[]}else c+=h}w.push(c);if(w.some(x=>x.trim()))r.push(w);return r}
+function pDate(s){s=String(s||'').trim();let m=s.match(/^(\d{1,2})[\/\-. ]([A-Za-z]{3}|\d{1,2})[\/\-. ,]*(\d{2,4})/);if(m){let mo=isNaN(m[2])?['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[2].toLowerCase()):m[2]-1,y=+m[3];if(y<100)y+=2000;return Date.UTC(y,mo,+m[1])/864e5}
+m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);return m?Date.UTC(+m[1],m[2]-1,+m[3])/864e5:NaN}
+const num=s=>parseFloat(String(s||'').replace(/[₹,\s]|Rs\.?|INR/gi,''));
+function setup(k){const rows=parseCSV($('#'+k).value),box=$('#m-'+k);if(!rows.length){S[k]=null;box.innerHTML='';return}
+ let hi=rows.findIndex(r=>r.some(c=>F.date.test(c)));if(hi<0)hi=0;
+ const hdr=rows[hi].map(x=>x.trim()),data=rows.slice(hi+1),f=key=>hdr.findIndex(h=>F[key].test(h));
+ let d=f('debit');const m={date:f('date'),desc:f('desc'),amt:d>=0?d:f('amt'),ref:f('ref'),status:f('status')};
+ S[k]={hdr,data,m};
+ box.innerHTML=LBL.map(([key,l])=>`<label>${l} <select data-k="${k}" data-f="${key}"><option value="-1">–</option>${hdr.map((h,i)=>`<option value="${i}"${m[key]==i?' selected':''}>${esc(h)}</option>`).join('')}</select></label>`).join('');
+ box.querySelectorAll('select').forEach(s=>s.onchange=()=>S[s.dataset.k].m[s.dataset.f]=+s.value)}
+function norm(k){const s=S[k];if(!s)return[];const{m,data}=s,g=(r,i)=>i>=0?(r[i]||'').trim():'';
+ const vals=data.map(r=>num(g(r,m.amt))),neg=vals.some(v=>v<0),o=[];
+ data.forEach((r,i)=>{let v=vals[i];if(isNaN(v))return;v=neg?(v<0?-v:0):Math.abs(v);const dt=pDate(g(r,m.date));
+  if(!v||isNaN(dt)||/fail|declin|revers/i.test(g(r,m.status)))return;
+  o.push({date:dt,desc:g(r,m.desc),ref:g(r,m.ref),amt:v})});return o}
+const refOf=x=>((x.ref+' '+x.desc).match(/\b\d{12}\b/)||[''])[0];
+const fd=d=>new Date(d*864e5).toISOString().slice(0,10);
+let OUT=[],FIL='flag';
+function run(){
+ if(!S.bank||!S.upi){$('#res').innerHTML='<p class="note">Add both statements first.</p>';return}
+ const B=norm('bank'),U=norm('upi'),thr=+$('#thr').value||0,only=$('#onlyupi').checked,used=new Set(),seen={};OUT=[];
+ B.filter(b=>!only||/upi/i.test(b.desc+' '+b.ref)).forEach(b=>{
+  const br=refOf(b);let ui=-1,how='';
+  if(br){ui=U.findIndex((x,i)=>!used.has(i)&&refOf(x)===br);how='UTR'}
+  if(ui<0){ui=U.findIndex((x,i)=>!used.has(i)&&Math.abs(x.amt-b.amt)<.005&&Math.abs(x.date-b.date)<=1);how='amount + date'}
+  let lv,st,nt;
+  if(ui<0){lv='high';st='Unrecognised debit';nt='Debited in bank but no matching UPI record'+(b.amt>=thr?' (large amount)':'')}
+  else{used.add(ui);const u=U[ui];
+   if(Math.abs(u.amt-b.amt)>.005){lv='high';st='Amount mismatch';nt=`Bank ${inr(b.amt)} vs UPI ${inr(u.amt)} (${esc(u.desc)})`}
+   else if(b.amt>=thr){lv='md';st='Large, verify';nt='Matched by '+how+', above your threshold'}
+   else{lv='ok';st='Matched';nt='Matched by '+how+(u.desc?' · '+esc(u.desc):'')}}
+  const key=b.date+'|'+b.amt+'|'+b.desc;if(seen[key]&&lv!='high'){lv='md';st='Possible duplicate';nt='Same date, amount and narration as another debit'}seen[key]=1;
+  OUT.push({src:'Bank',date:b.date,desc:b.desc,amt:b.amt,lv,st,nt})});
+ U.forEach((u,i)=>{if(!used.has(i))OUT.push({src:'UPI app',date:u.date,desc:u.desc,amt:u.amt,lv:'md',st:'Missing in bank',nt:'UPI shows success but no bank debit found. Check pending or reversed payments'})});
+ OUT.sort((a,b)=>(a.lv=='ok')-(b.lv=='ok')||a.date-b.date);draw()}
+function draw(){
+ const c=l=>OUT.filter(o=>o.lv==l),hi=c('high'),md=c('md'),ok=c('ok');
+ const rows=OUT.filter(o=>FIL=='all'||(FIL=='flag'?o.lv!='ok':o.lv=='ok'));
+ $('#res').innerHTML=`<div class="stats"><div class="stat"><b>${OUT.length}</b><span>Transactions checked</span></div><div class="stat"><b class="ok">${ok.length}</b><span>Matched</span></div><div class="stat"><b class="high">${hi.length}</b><span>High risk · ${inr(hi.reduce((a,o)=>a+o.amt,0))}</span></div><div class="stat"><b class="md">${md.length}</b><span>Needs review</span></div></div>
+ <div class="tabs">${[['flag','Flagged'],['ok','Matched'],['all','All']].map(([k,l])=>`<button class="${FIL==k?'on':''}" data-t="${k}">${l}</button>`).join('')}<button id="exp" style="margin-left:auto">Export flagged CSV</button></div>
+ <div class="wrap"><table><tr><th>Date</th><th>Source</th><th>Description</th><th style="text-align:right">Amount</th><th>Status</th><th>Why</th></tr>${rows.map(o=>`<tr><td>${fd(o.date)}</td><td>${o.src}</td><td>${esc(o.desc)}</td><td class="n">${inr(o.amt)}</td><td><span class="tag ${o.lv}">${o.st}</span></td><td>${o.nt}</td></tr>`).join('')||'<tr><td colspan="6">Nothing here.</td></tr>'}</table></div>`;
+ document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>{FIL=b.dataset.t;draw()});
+ $('#exp').onclick=()=>{const q=v=>'"'+String(v).replace(/"/g,'""')+'"',t=['Date,Source,Description,Amount,Status,Why'].concat(OUT.filter(o=>o.lv!='ok').map(o=>[fd(o.date),o.src,o.desc,o.amt,o.st,o.nt.replace(/&amp;/g,'&')].map(q).join(','))).join('\n');
+  const a=document.createElement('a');a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(t);a.download='flagged-transactions.csv';a.click()}}
+$('#go').onclick=()=>{setup('bank');setup('upi');run()};
+['bank','upi'].forEach(k=>$('#'+k).oninput=()=>setup(k));
+document.querySelectorAll('input[type=file]').forEach(i=>i.onchange=()=>{const f=i.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{$('#'+i.dataset.for).value=r.result;setup(i.dataset.for)};r.readAsText(f)});
+$('#sample').onclick=()=>{
+$('#bank').value=`Date,Narration,Withdrawal Amt.,Deposit Amt.,Chq./Ref.No.
+02/10/2026,UPI/628475930112/Swiggy/okaxis,450.00,,628475930112
+03/10/2026,UPI/628475930113/Ravi Kumar/ybl,2000.00,,628475930113
+04/10/2026,UPI/628475930114/Unknown Merchant/paytm,9999.00,,628475930114
+05/10/2026,UPI/628475930115/BigBasket/icici,1280.00,,628475930115
+06/10/2026,ATM WDL 1234,5000.00,,
+07/10/2026,UPI/628475930116/Electricity Board/sbi,1850.00,,628475930116`;
+$('#upi').value=`Date,Payee,Amount,UTR,Status
+02/10/2026,Swiggy,450,628475930112,Success
+03/10/2026,Ravi Kumar,200,628475930113,Success
+05/10/2026,BigBasket,1280,628475930115,Success
+07/10/2026,Electricity Board,1850,628475930116,Success
+08/10/2026,Chai Point,60,628475930117,Success`;
+setup('bank');setup('upi');run()};
+</script></body></html>
